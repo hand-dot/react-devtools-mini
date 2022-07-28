@@ -617,10 +617,228 @@ export const onBridgeOperations = (operations: Array<number>) => {
 
   if (__DEBUG__) {
     // TODO https://github.com/facebook/react/blob/2e1c8841e97923e7af50c5c5311e3724b7b6555d/packages/react-devtools-shared/src/devtools/utils.js#L53
-    // console.log(printStore(this, true));
+    // console.log(printStore(_roots, true));
     console.log(_idToElement);
     console.groupEnd();
   }
 
   // this.emit("mutated", [addedElementIDs, removedElementIDs]);
 };
+
+type StateContext = {
+  // Tree
+  numElements: number;
+  ownerSubtreeLeafElementID: number | null;
+  selectedElementID: number | null;
+  selectedElementIndex: number | null;
+
+  // Search
+  searchIndex: number | null;
+  searchResults: Array<number>;
+  searchText: string;
+
+  // Owners
+  ownerID: number | null;
+  ownerFlatTree: Array<Element> | null;
+
+  // Inspection element panel
+  inspectedElementID: number | null;
+};
+
+type Store = {
+  backendVersion: [];
+  collapseNodesByDefault: [];
+  componentFilters: [];
+  error: [Error];
+  mutated: [[Array<number>, Map<number, number>]];
+  recordChangeDescriptions: [];
+  roots: [];
+  rootSupportsBasicProfiling: [];
+  rootSupportsTimelineProfiling: [];
+  supportsNativeStyleEditor: [];
+  supportsReloadAndProfile: [];
+  unsupportedBridgeProtocolDetected: [];
+  unsupportedRendererVersionDetected: [];
+};
+
+function printStore(
+  roots: Array<number>,
+  includeWeight: boolean = false,
+  state: StateContext | null = null
+) {
+  const snapshotLines = [];
+
+  let rootWeight = 0;
+
+  function printSelectedMarker(index: number): string {
+    if (state === null) {
+      return "";
+    }
+    return state.selectedElementIndex === index ? `→` : " ";
+  }
+
+  function printErrorsAndWarnings(element: Element): string {
+    const { errorCount, warningCount } = _errorsAndWarnings.get(element.id) || {
+      errorCount: 0,
+      warningCount: 0,
+    };
+    if (errorCount === 0 && warningCount === 0) {
+      return "";
+    }
+    return ` ${errorCount > 0 ? "✕" : ""}${warningCount > 0 ? "⚠" : ""}`;
+  }
+
+  const ownerFlatTree = state !== null ? state.ownerFlatTree : null;
+  if (ownerFlatTree !== null) {
+    snapshotLines.push(
+      "[owners]" + (includeWeight ? ` (${ownerFlatTree.length})` : "")
+    );
+    ownerFlatTree.forEach((element, index) => {
+      const printedSelectedMarker = printSelectedMarker(index);
+      const printedElement = printElement(element, false);
+      const printedErrorsAndWarnings = printErrorsAndWarnings(element);
+      snapshotLines.push(
+        `${printedSelectedMarker}${printedElement}${printedErrorsAndWarnings}`
+      );
+    });
+  } else {
+    const errorsAndWarnings = _errorsAndWarnings;
+    if (errorsAndWarnings.size > 0) {
+      let errorCount = 0;
+      let warningCount = 0;
+      errorsAndWarnings.forEach((entry) => {
+        errorCount += entry.errorCount;
+        warningCount += entry.warningCount;
+      });
+
+      snapshotLines.push(`✕ ${errorCount}, ⚠ ${warningCount}`);
+    }
+
+    const getElementByID = (id: number): Element | null => {
+      const element = _idToElement.get(id);
+      if (element == null) {
+        console.warn(`No element found with id "${id}"`);
+        return null;
+      }
+
+      return element;
+    };
+
+    const getElementAtIndex = (index: number): Element | null => {
+      if (index < 0 || index >= _weightAcrossRoots) {
+        console.warn(
+          `Invalid index ${index} specified; store contains ${_weightAcrossRoots} items.`
+        );
+
+        return null;
+      }
+
+      // Find which root this element is in...
+      let rootID;
+      let root;
+      let rootWeight = 0;
+      for (let i = 0; i < _roots.length; i++) {
+        rootID = _roots[i];
+        root = _idToElement.get(rootID);
+        if (root.children.length === 0) {
+          continue;
+        } else if (rootWeight + root.weight > index) {
+          break;
+        } else {
+          rootWeight += root.weight;
+        }
+      }
+
+      // Find the element in the tree using the weight of each node...
+      // Skip over the root itself, because roots aren't visible in the Elements tree.
+      let currentElement = root;
+      let currentWeight = rootWeight - 1;
+      while (index !== currentWeight) {
+        const numChildren = currentElement.children.length;
+        for (let i = 0; i < numChildren; i++) {
+          const childID = currentElement.children[i];
+          const child = _idToElement.get(childID);
+          const childWeight = child.isCollapsed ? 1 : child.weight;
+
+          if (index <= currentWeight + childWeight) {
+            currentWeight++;
+            currentElement = child;
+            break;
+          } else {
+            currentWeight += childWeight;
+          }
+        }
+      }
+
+      return currentElement;
+    };
+
+    roots.forEach((rootID) => {
+      const { weight } = getElementByID(rootID);
+      const maybeWeightLabel = includeWeight ? ` (${weight})` : "";
+
+      // Store does not (yet) expose a way to get errors/warnings per root.
+      snapshotLines.push(`[root]${maybeWeightLabel}`);
+
+      for (let i = rootWeight; i < rootWeight + weight; i++) {
+        const element = getElementAtIndex(i);
+
+        if (element == null) {
+          throw Error(`Could not find element at index "${i}"`);
+        }
+
+        const printedSelectedMarker = printSelectedMarker(i);
+        const printedElement = printElement(element, includeWeight);
+        const printedErrorsAndWarnings = printErrorsAndWarnings(element);
+        snapshotLines.push(
+          `${printedSelectedMarker}${printedElement}${printedErrorsAndWarnings}`
+        );
+      }
+
+      rootWeight += weight;
+    });
+
+    // Make sure the pretty-printed test align with the Store's reported number of total rows.
+    if (rootWeight !== _weightAcrossRoots) {
+      throw Error(
+        `Inconsistent Store state. Individual root weights ("${rootWeight}") do not match total weight ("${_weightAcrossRoots}")`
+      );
+    }
+
+    // If roots have been unmounted, verify that they've been removed from maps.
+    // This helps ensure the Store doesn't leak memory.
+    // TODO IMPL
+    // store.assertExpectedRootMapSizes();
+  }
+
+  return snapshotLines.join("\n");
+}
+
+function printElement(element: Element, includeWeight: boolean = false) {
+  let prefix = " ";
+  if (element.children.length > 0) {
+    prefix = element.isCollapsed ? "▸" : "▾";
+  }
+
+  let key = "";
+  if (element.key !== null) {
+    key = ` key="${element.key}"`;
+  }
+
+  let hocDisplayNames = null;
+  if (element.hocDisplayNames !== null) {
+    hocDisplayNames = [...element.hocDisplayNames];
+  }
+
+  const hocs =
+    hocDisplayNames === null ? "" : ` [${hocDisplayNames.join("][")}]`;
+
+  let suffix = "";
+  if (includeWeight) {
+    suffix = ` (${element.isCollapsed ? 1 : element.weight})`;
+  }
+
+  return `${"  ".repeat(element.depth + 1)}${prefix} <${
+    element.displayName || "null"
+  }${key}>${hocs}${suffix}`;
+}
