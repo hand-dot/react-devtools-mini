@@ -1,10 +1,207 @@
 const __DEBUG__ = true;
-const debug = console.log
+const __DEV__ = true;
+const StrictMode = 1;
+const debug = console.log;
+function utfDecodeString(array: Array<number>): string {
+  // Avoid spreading the array (e.g. String.fromCodePoint(...array))
+  // Functions arguments are first placed on the stack before the function is called
+  // which throws a RangeError for large arrays.
+  // See github.com/facebook/react/issues/22293
+  let string = "";
+  for (let i = 0; i < array.length; i++) {
+    const char = array[i];
+    string += String.fromCodePoint(char);
+  }
+  return string;
+}
+const TREE_OPERATION_ADD = 1;
+const TREE_OPERATION_REMOVE = 2;
+const TREE_OPERATION_REORDER_CHILDREN = 3;
+const TREE_OPERATION_UPDATE_TREE_BASE_DURATION = 4;
+const TREE_OPERATION_UPDATE_ERRORS_OR_WARNINGS = 5;
+const TREE_OPERATION_REMOVE_ROOT = 6;
+const TREE_OPERATION_SET_SUBTREE_MODE = 7;
+const PROFILING_FLAG_BASIC_SUPPORT = 0b01;
+const PROFILING_FLAG_TIMELINE_SUPPORT = 0b10;
+
+interface Element {
+  id: number;
+  parentID: number;
+  children: Array<number>;
+  type: ElementType;
+  displayName: string | null;
+  key: number | string | null;
+
+  hocDisplayNames: null | Array<string>;
+
+  // Should the elements children be visible in the tree?
+  isCollapsed: boolean;
+
+  // Owner (if available)
+  ownerID: number;
+
+  // How many levels deep within the tree is this element?
+  // This determines how much indentation (left padding) should be used in the Elements tree.
+  depth: number;
+
+  // How many nodes (including itself) are below this Element within the tree.
+  // This property is used to quickly determine the total number of Elements,
+  // and the Element at any given index (for windowing purposes).
+  weight: number;
+
+  // This element is not in a StrictMode compliant subtree.
+  // Only true for React versions supporting StrictMode.
+  isStrictModeNonCompliant: boolean;
+}
+const _idToElement: Map<number, Element> = new Map();
+
+const _throwAndEmitError = (e: Error) => {
+  throw e;
+};
+
+type BridgeProtocol = {
+  // Version supported by the current frontend/backend.
+  version: number;
+
+  // NPM version range that also supports this version.
+  // Note that 'maxNpmVersion' is only set when the version is bumped.
+  minNpmVersion: string;
+  maxNpmVersion: string | null;
+};
+const _bridgeProtocol: BridgeProtocol | null = null;
+
+const _rootIDToRendererID: Map<number, number> = new Map();
+type Capabilities = {
+  supportsBasicProfiling: boolean;
+  hasOwnerMetadata: boolean;
+  supportsStrictMode: boolean;
+  supportsTimeline: boolean;
+};
+const _rootIDToCapabilities: Map<number, Capabilities> = new Map();
+let _roots: Array<number> = [];
+
+type ElementType = 1 | 2 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14;
+const ElementTypeClass = 1;
+const ElementTypeContext = 2;
+const ElementTypeFunction = 5;
+const ElementTypeForwardRef = 6;
+const ElementTypeHostComponent = 7;
+const ElementTypeMemo = 8;
+const ElementTypeOtherOrUnknown = 9;
+const ElementTypeProfiler = 10;
+const ElementTypeRoot = 11;
+const ElementTypeSuspense = 12;
+const ElementTypeSuspenseList = 13;
+const ElementTypeTracingMarker = 14;
+function separateDisplayNameAndHOCs(
+  displayName: string | null,
+  type: ElementType
+): [string | null, Array<string> | null] {
+  if (displayName === null) {
+    return [null, null];
+  }
+
+  let hocDisplayNames = null;
+
+  switch (type) {
+    case ElementTypeClass:
+    case ElementTypeForwardRef:
+    case ElementTypeFunction:
+    case ElementTypeMemo:
+      if (displayName.indexOf("(") >= 0) {
+        const matches = displayName.match(/[^()]+/g);
+        if (matches != null) {
+          displayName = matches.pop();
+          hocDisplayNames = matches;
+        }
+      }
+      break;
+    default:
+      break;
+  }
+
+  return [displayName, hocDisplayNames];
+}
+
+const _collapseNodesByDefault = true;
+let _weightAcrossRoots: number = 0;
+
+const _adjustParentTreeWeight = (
+  parentElement: Element | null,
+  weightDelta: number
+) => {
+  let isInsideCollapsedSubTree = false;
+
+  while (parentElement != null) {
+    parentElement.weight += weightDelta;
+
+    // Additions and deletions within a collapsed subtree should not bubble beyond the collapsed parent.
+    // Their weight will bubble up when the parent is expanded.
+    if (parentElement.isCollapsed) {
+      isInsideCollapsedSubTree = true;
+      break;
+    }
+
+    parentElement = _idToElement.get(parentElement.parentID);
+  }
+
+  // Additions and deletions within a collapsed subtree should not affect the overall number of elements.
+  if (!isInsideCollapsedSubTree) {
+    _weightAcrossRoots += weightDelta;
+  }
+};
+
+const _ownersMap: Map<number, Set<number>> = new Map();
+
+const _errorsAndWarnings: Map<
+  number,
+  { errorCount: number; warningCount: number }
+> = new Map();
+
+const _recursivelyUpdateSubtree = (
+  id: number,
+  callback: (element: Element) => void
+) => {
+  const element = _idToElement.get(id);
+  if (element) {
+    callback(element);
+
+    element.children.forEach((child) =>
+      _recursivelyUpdateSubtree(child, callback)
+    );
+  }
+};
+
+let _revision: number = 0;
+
+type ErrorAndWarningTuples = Array<{ id: number; index: number }>;
+
+let _cachedErrorAndWarningTuples: ErrorAndWarningTuples | null = null;
+let _cachedErrorCount: number = 0;
+let _cachedWarningCount: number = 0;
+
+let _rootSupportsBasicProfiling: boolean = false;
+let _rootSupportsTimelineProfiling: boolean = false;
+
+let _hasOwnerMetadata: boolean = false;
+
+class UnsupportedBridgeOperationError extends Error {
+  constructor(message: string) {
+    super(message);
+
+    // Maintains proper stack trace for where our error was thrown (only available on V8)
+    if (Error.captureStackTrace) {
+      Error.captureStackTrace(this, UnsupportedBridgeOperationError);
+    }
+
+    this.name = "UnsupportedBridgeOperationError";
+  }
+}
 
 export const onBridgeOperations = (operations: Array<number>) => {
   if (__DEBUG__) {
-    console.groupCollapsed('onBridgeOperations');
-    debug('onBridgeOperations', operations.join(','));
+    console.groupCollapsed("onBridgeOperations");
+    debug("onBridgeOperations", operations.join(","));
   }
 
   let haveRootsChanged = false;
@@ -21,16 +218,14 @@ export const onBridgeOperations = (operations: Array<number>) => {
   let i = 2;
 
   // Reassemble the string table.
-  const stringTable = [
+  const stringTable: Array<null | string> = [
     null, // ID = 0 corresponds to the null string.
   ];
   const stringTableSize = operations[i++];
   const stringTableEnd = i + stringTableSize;
   while (i < stringTableEnd) {
     const nextLength = operations[i++];
-    const nextString = utfDecodeString(
-      (operations.slice(i, i + nextLength): any),
-    );
+    const nextString = utfDecodeString(operations.slice(i, i + nextLength));
     stringTable.push(nextString);
     i += nextLength;
   }
@@ -39,24 +234,24 @@ export const onBridgeOperations = (operations: Array<number>) => {
     const operation = operations[i];
     switch (operation) {
       case TREE_OPERATION_ADD: {
-        const id = ((operations[i + 1]: any): number);
-        const type = ((operations[i + 2]: any): ElementType);
+        const id = operations[i + 1];
+        const type = operations[i + 2] as ElementType;
 
         i += 3;
 
-        if (this._idToElement.has(id)) {
-          this._throwAndEmitError(
+        if (_idToElement.has(id)) {
+          _throwAndEmitError(
             Error(
-              `Cannot add node "${id}" because a node with that id is already in the Store.`,
-            ),
+              `Cannot add node "${id}" because a node with that id is already in the Store.`
+            )
           );
         }
 
         let ownerID: number = 0;
-        let parentID: number = ((null: any): number);
+        let parentID: number = 0;
         if (type === ElementTypeRoot) {
           if (__DEBUG__) {
-            debug('Add', `new root node ${id}`);
+            debug("Add", `new root node ${id}`);
           }
 
           const isStrictModeCompliant = operations[i] > 0;
@@ -73,10 +268,7 @@ export const onBridgeOperations = (operations: Array<number>) => {
 
           // If we don't know the bridge protocol, guess that we're dealing with the latest.
           // If we do know it, we can take it into consideration when parsing operations.
-          if (
-            this._bridgeProtocol === null ||
-            this._bridgeProtocol.version >= 2
-          ) {
+          if (_bridgeProtocol === null || _bridgeProtocol.version >= 2) {
             supportsStrictMode = operations[i] > 0;
             i++;
 
@@ -84,9 +276,9 @@ export const onBridgeOperations = (operations: Array<number>) => {
             i++;
           }
 
-          this._roots = this._roots.concat(id);
-          this._rootIDToRendererID.set(id, rendererID);
-          this._rootIDToCapabilities.set(id, {
+          _roots = _roots.concat(id);
+          _rootIDToRendererID.set(id, rendererID);
+          _rootIDToCapabilities.set(id, {
             supportsBasicProfiling,
             hasOwnerMetadata,
             supportsStrictMode,
@@ -98,7 +290,7 @@ export const onBridgeOperations = (operations: Array<number>) => {
           const isStrictModeNonCompliant =
             !isStrictModeCompliant && supportsStrictMode;
 
-          this._idToElement.set(id, {
+          _idToElement.set(id, {
             children: [],
             depth: -1,
             displayName: null,
@@ -115,10 +307,10 @@ export const onBridgeOperations = (operations: Array<number>) => {
 
           haveRootsChanged = true;
         } else {
-          parentID = ((operations[i]: any): number);
+          parentID = operations[i];
           i++;
 
-          ownerID = ((operations[i]: any): number);
+          ownerID = operations[i];
           i++;
 
           const displayNameStringID = operations[i];
@@ -131,28 +323,24 @@ export const onBridgeOperations = (operations: Array<number>) => {
 
           if (__DEBUG__) {
             debug(
-              'Add',
-              `node ${id} (${displayName || 'null'}) as child of ${parentID}`,
+              "Add",
+              `node ${id} (${displayName || "null"}) as child of ${parentID}`
             );
           }
 
-          if (!this._idToElement.has(parentID)) {
-            this._throwAndEmitError(
+          if (!_idToElement.has(parentID)) {
+            _throwAndEmitError(
               Error(
-                `Cannot add child "${id}" to parent "${parentID}" because parent node was not found in the Store.`,
-              ),
+                `Cannot add child "${id}" to parent "${parentID}" because parent node was not found in the Store.`
+              )
             );
           }
 
-          const parentElement = ((this._idToElement.get(
-            parentID,
-          ): any): Element);
+          const parentElement = _idToElement.get(parentID);
           parentElement.children.push(id);
 
-          const [
-            displayNameWithoutHOCs,
-            hocDisplayNames,
-          ] = separateDisplayNameAndHOCs(displayName, type);
+          const [displayNameWithoutHOCs, hocDisplayNames] =
+            separateDisplayNameAndHOCs(displayName, type);
 
           const element: Element = {
             children: [],
@@ -160,7 +348,7 @@ export const onBridgeOperations = (operations: Array<number>) => {
             displayName: displayNameWithoutHOCs,
             hocDisplayNames,
             id,
-            isCollapsed: this._collapseNodesByDefault,
+            isCollapsed: _collapseNodesByDefault,
             isStrictModeNonCompliant: parentElement.isStrictModeNonCompliant,
             key,
             ownerID,
@@ -169,15 +357,15 @@ export const onBridgeOperations = (operations: Array<number>) => {
             weight: 1,
           };
 
-          this._idToElement.set(id, element);
+          _idToElement.set(id, element);
           addedElementIDs.push(id);
-          this._adjustParentTreeWeight(parentElement, 1);
+          _adjustParentTreeWeight(parentElement, 1);
 
           if (ownerID > 0) {
-            let set = this._ownersMap.get(ownerID);
+            let set = _ownersMap.get(ownerID);
             if (set === undefined) {
               set = new Set();
-              this._ownersMap.set(ownerID, set);
+              _ownersMap.set(ownerID, set);
             }
             set.add(id);
           }
@@ -185,72 +373,72 @@ export const onBridgeOperations = (operations: Array<number>) => {
         break;
       }
       case TREE_OPERATION_REMOVE: {
-        const removeLength = ((operations[i + 1]: any): number);
+        const removeLength = operations[i + 1];
         i += 2;
 
         for (let removeIndex = 0; removeIndex < removeLength; removeIndex++) {
-          const id = ((operations[i]: any): number);
+          const id = operations[i];
 
-          if (!this._idToElement.has(id)) {
-            this._throwAndEmitError(
+          if (!_idToElement.has(id)) {
+            _throwAndEmitError(
               Error(
-                `Cannot remove node "${id}" because no matching node was found in the Store.`,
-              ),
+                `Cannot remove node "${id}" because no matching node was found in the Store.`
+              )
             );
           }
 
           i += 1;
 
-          const element = ((this._idToElement.get(id): any): Element);
-          const {children, ownerID, parentID, weight} = element;
+          const element = _idToElement.get(id);
+          const { children, ownerID, parentID, weight } = element;
           if (children.length > 0) {
-            this._throwAndEmitError(
-              Error(`Node "${id}" was removed before its children.`),
+            _throwAndEmitError(
+              Error(`Node "${id}" was removed before its children.`)
             );
           }
 
-          this._idToElement.delete(id);
+          _idToElement.delete(id);
 
           let parentElement = null;
           if (parentID === 0) {
             if (__DEBUG__) {
-              debug('Remove', `node ${id} root`);
+              debug("Remove", `node ${id} root`);
             }
 
-            this._roots = this._roots.filter(rootID => rootID !== id);
-            this._rootIDToRendererID.delete(id);
-            this._rootIDToCapabilities.delete(id);
+            _roots = _roots.filter((rootID) => rootID !== id);
+            _rootIDToRendererID.delete(id);
+            _rootIDToCapabilities.delete(id);
 
             haveRootsChanged = true;
           } else {
             if (__DEBUG__) {
-              debug('Remove', `node ${id} from parent ${parentID}`);
+              debug("Remove", `node ${id} from parent ${parentID}`);
             }
-            parentElement = ((this._idToElement.get(parentID): any): Element);
+            parentElement = _idToElement.get(parentID);
             if (parentElement === undefined) {
-              this._throwAndEmitError(
+              _throwAndEmitError(
                 Error(
-                  `Cannot remove node "${id}" from parent "${parentID}" because no matching node was found in the Store.`,
-                ),
+                  `Cannot remove node "${id}" from parent "${parentID}" because no matching node was found in the Store.`
+                )
               );
             }
             const index = parentElement.children.indexOf(id);
             parentElement.children.splice(index, 1);
           }
 
-          this._adjustParentTreeWeight(parentElement, -weight);
+          _adjustParentTreeWeight(parentElement, -weight);
           removedElementIDs.set(id, parentID);
 
-          this._ownersMap.delete(id);
+          _ownersMap.delete(id);
           if (ownerID > 0) {
-            const set = this._ownersMap.get(ownerID);
+            const set = _ownersMap.get(ownerID);
             if (set !== undefined) {
               set.delete(id);
             }
           }
 
-          if (this._errorsAndWarnings.has(id)) {
-            this._errorsAndWarnings.delete(id);
+          if (_errorsAndWarnings.has(id)) {
+            _errorsAndWarnings.delete(id);
             haveErrorsOrWarningsChanged = true;
           }
         }
@@ -266,9 +454,9 @@ export const onBridgeOperations = (operations: Array<number>) => {
           debug(`Remove root ${id}`);
         }
 
-        const recursivelyDeleteElements = elementID => {
-          const element = this._idToElement.get(elementID);
-          this._idToElement.delete(elementID);
+        const recursivelyDeleteElements = (elementID) => {
+          const element = _idToElement.get(elementID);
+          _idToElement.delete(elementID);
           if (element) {
             // Mostly for Flow's sake
             for (let index = 0; index < element.children.length; index++) {
@@ -277,35 +465,35 @@ export const onBridgeOperations = (operations: Array<number>) => {
           }
         };
 
-        const root = ((this._idToElement.get(id): any): Element);
+        const root = _idToElement.get(id);
         recursivelyDeleteElements(id);
 
-        this._rootIDToCapabilities.delete(id);
-        this._rootIDToRendererID.delete(id);
-        this._roots = this._roots.filter(rootID => rootID !== id);
-        this._weightAcrossRoots -= root.weight;
+        _rootIDToCapabilities.delete(id);
+        _rootIDToRendererID.delete(id);
+        _roots = _roots.filter((rootID) => rootID !== id);
+        _weightAcrossRoots -= root.weight;
         break;
       }
       case TREE_OPERATION_REORDER_CHILDREN: {
-        const id = ((operations[i + 1]: any): number);
-        const numChildren = ((operations[i + 2]: any): number);
+        const id = operations[i + 1];
+        const numChildren = operations[i + 2];
         i += 3;
 
-        if (!this._idToElement.has(id)) {
-          this._throwAndEmitError(
+        if (!_idToElement.has(id)) {
+          _throwAndEmitError(
             Error(
-              `Cannot reorder children for node "${id}" because no matching node was found in the Store.`,
-            ),
+              `Cannot reorder children for node "${id}" because no matching node was found in the Store.`
+            )
           );
         }
 
-        const element = ((this._idToElement.get(id): any): Element);
+        const element = _idToElement.get(id);
         const children = element.children;
         if (children.length !== numChildren) {
-          this._throwAndEmitError(
+          _throwAndEmitError(
             Error(
-              `Children cannot be added or removed during a reorder operation.`,
-            ),
+              `Children cannot be added or removed during a reorder operation.`
+            )
           );
         }
 
@@ -314,10 +502,10 @@ export const onBridgeOperations = (operations: Array<number>) => {
           children[j] = childID;
           if (__DEV__) {
             // This check is more expensive so it's gated by __DEV__.
-            const childElement = this._idToElement.get(childID);
+            const childElement = _idToElement.get(childID);
             if (childElement == null || childElement.parentID !== id) {
               console.error(
-                `Children cannot be added or removed during a reorder operation.`,
+                `Children cannot be added or removed during a reorder operation.`
               );
             }
           }
@@ -325,7 +513,7 @@ export const onBridgeOperations = (operations: Array<number>) => {
         i += numChildren;
 
         if (__DEBUG__) {
-          debug('Re-order', `Node ${id} children ${children.join(',')}`);
+          debug("Re-order", `Node ${id} children ${children.join(",")}`);
         }
         break;
       }
@@ -338,16 +526,13 @@ export const onBridgeOperations = (operations: Array<number>) => {
         // If elements have already been mounted in this subtree, update them.
         // (In practice, this likely only applies to the root element.)
         if (mode === StrictMode) {
-          this._recursivelyUpdateSubtree(id, element => {
+          _recursivelyUpdateSubtree(id, (element) => {
             element.isStrictModeNonCompliant = false;
           });
         }
 
         if (__DEBUG__) {
-          debug(
-            'Subtree mode',
-            `Subtree with root ${id} set to mode ${mode}`,
-          );
+          debug("Subtree mode", `Subtree with root ${id} set to mode ${mode}`);
         }
         break;
       }
@@ -365,79 +550,77 @@ export const onBridgeOperations = (operations: Array<number>) => {
         i += 4;
 
         if (errorCount > 0 || warningCount > 0) {
-          this._errorsAndWarnings.set(id, {errorCount, warningCount});
-        } else if (this._errorsAndWarnings.has(id)) {
-          this._errorsAndWarnings.delete(id);
+          _errorsAndWarnings.set(id, { errorCount, warningCount });
+        } else if (_errorsAndWarnings.has(id)) {
+          _errorsAndWarnings.delete(id);
         }
         haveErrorsOrWarningsChanged = true;
         break;
       default:
-        this._throwAndEmitError(
+        _throwAndEmitError(
           new UnsupportedBridgeOperationError(
-            `Unsupported Bridge operation "${operation}"`,
-          ),
+            `Unsupported Bridge operation "${operation}"`
+          )
         );
     }
   }
 
-  this._revision++;
+  _revision++;
 
   // Any time the tree changes (e.g. elements added, removed, or reordered) cached inidices may be invalid.
-  this._cachedErrorAndWarningTuples = null;
+  _cachedErrorAndWarningTuples = null;
 
   if (haveErrorsOrWarningsChanged) {
     let errorCount = 0;
     let warningCount = 0;
 
-    this._errorsAndWarnings.forEach(entry => {
+    _errorsAndWarnings.forEach((entry) => {
       errorCount += entry.errorCount;
       warningCount += entry.warningCount;
     });
 
-    this._cachedErrorCount = errorCount;
-    this._cachedWarningCount = warningCount;
+    _cachedErrorCount = errorCount;
+    _cachedWarningCount = warningCount;
   }
 
   if (haveRootsChanged) {
-    const prevRootSupportsProfiling = this._rootSupportsBasicProfiling;
-    const prevRootSupportsTimelineProfiling = this
-      ._rootSupportsTimelineProfiling;
+    const prevRootSupportsProfiling = _rootSupportsBasicProfiling;
+    const prevRootSupportsTimelineProfiling = _rootSupportsTimelineProfiling;
 
-    this._hasOwnerMetadata = false;
-    this._rootSupportsBasicProfiling = false;
-    this._rootSupportsTimelineProfiling = false;
-    this._rootIDToCapabilities.forEach(
-      ({supportsBasicProfiling, hasOwnerMetadata, supportsTimeline}) => {
+    _hasOwnerMetadata = false;
+    _rootSupportsBasicProfiling = false;
+    _rootSupportsTimelineProfiling = false;
+    _rootIDToCapabilities.forEach(
+      ({ supportsBasicProfiling, hasOwnerMetadata, supportsTimeline }) => {
         if (supportsBasicProfiling) {
-          this._rootSupportsBasicProfiling = true;
+          _rootSupportsBasicProfiling = true;
         }
         if (hasOwnerMetadata) {
-          this._hasOwnerMetadata = true;
+          _hasOwnerMetadata = true;
         }
         if (supportsTimeline) {
-          this._rootSupportsTimelineProfiling = true;
+          _rootSupportsTimelineProfiling = true;
         }
-      },
+      }
     );
 
-    this.emit('roots');
+    // this.emit("roots");
 
-    if (this._rootSupportsBasicProfiling !== prevRootSupportsProfiling) {
-      this.emit('rootSupportsBasicProfiling');
+    if (_rootSupportsBasicProfiling !== prevRootSupportsProfiling) {
+      // this.emit("rootSupportsBasicProfiling");
     }
 
-    if (
-      this._rootSupportsTimelineProfiling !==
-      prevRootSupportsTimelineProfiling
-    ) {
-      this.emit('rootSupportsTimelineProfiling');
+    if (_rootSupportsTimelineProfiling !== prevRootSupportsTimelineProfiling) {
+      // this.emit("rootSupportsTimelineProfiling");
     }
   }
 
   if (__DEBUG__) {
-    console.log(printStore(this, true));
+    // TODO https://github.com/facebook/react/blob/2e1c8841e97923e7af50c5c5311e3724b7b6555d/packages/react-devtools-shared/src/devtools/utils.js#L53
+    // console.log(printStore(this, true));
+    console.log(_idToElement);
     console.groupEnd();
   }
 
-  this.emit('mutated', [addedElementIDs, removedElementIDs]);
+  // this.emit("mutated", [addedElementIDs, removedElementIDs]);
 };
